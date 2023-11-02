@@ -111,10 +111,10 @@ class MaskDecoder(nn.Module):
 
     def predict_masks(
         self,
-        image_embeddings: torch.Tensor,
-        image_pe: torch.Tensor,
-        sparse_prompt_embeddings: torch.Tensor,
-        dense_prompt_embeddings: torch.Tensor,
+        image_embeddings: torch.Tensor, # (1, dim, H, W)
+        image_pe: torch.Tensor, # (1, dim, H, W)
+        sparse_prompt_embeddings: torch.Tensor, # (bs, 2, dim)
+        dense_prompt_embeddings: torch.Tensor,  # (bs, dim, H, W)
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predicts masks. See 'forward' for more details."""
         # Concatenate output tokens

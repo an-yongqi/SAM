@@ -7,6 +7,7 @@
 import numpy as np
 import torch
 from torchvision.ops.boxes import batched_nms, box_area  # type: ignore
+from torch.autograd import profiler
 
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -158,66 +159,73 @@ class SamAutomaticMaskGenerator:
                crop_box (list(float)): The crop of the image used to generate
                  the mask, given in XYWH format.
         """
+        with profiler.record_function("generate_masks"):    # 6128ms, 1次, 几乎所有时间
+            # Generate masks
+            mask_data = self._generate_masks(image)
 
-        # Generate masks
-        mask_data = self._generate_masks(image)
-
-        # Filter small disconnected regions and holes in masks
+        # (默认没有) Filter small disconnected regions and holes in masks
         if self.min_mask_region_area > 0:
-            mask_data = self.postprocess_small_regions(
-                mask_data,
-                self.min_mask_region_area,
-                max(self.box_nms_thresh, self.crop_nms_thresh),
-            )
+            with profiler.record_function("postprocess_small_regions"): # 忽略不计
+                mask_data = self.postprocess_small_regions(
+                    mask_data,
+                    self.min_mask_region_area,
+                    max(self.box_nms_thresh, self.crop_nms_thresh),
+                )
 
-        # Encode masks
-        if self.output_mode == "coco_rle":
-            mask_data["segmentations"] = [coco_encode_rle(rle) for rle in mask_data["rles"]]
-        elif self.output_mode == "binary_mask":
-            mask_data["segmentations"] = [rle_to_mask(rle) for rle in mask_data["rles"]]
-        else:
-            mask_data["segmentations"] = mask_data["rles"]
+        # (数据格式处理) Encode masks
+        with profiler.record_function("encode_masks"):  # 23ms, 1次, 很快
+            if self.output_mode == "coco_rle":
+                mask_data["segmentations"] = [coco_encode_rle(rle) for rle in mask_data["rles"]]
+            elif self.output_mode == "binary_mask":
+                mask_data["segmentations"] = [rle_to_mask(rle) for rle in mask_data["rles"]]
+            else:
+                mask_data["segmentations"] = mask_data["rles"]
 
-        # Write mask records
-        curr_anns = []
-        for idx in range(len(mask_data["segmentations"])):
-            ann = {
-                "segmentation": mask_data["segmentations"][idx],
-                "area": area_from_rle(mask_data["rles"][idx]),
-                "bbox": box_xyxy_to_xywh(mask_data["boxes"][idx]).tolist(),
-                "predicted_iou": mask_data["iou_preds"][idx].item(),
-                "point_coords": [mask_data["points"][idx].tolist()],
-                "stability_score": mask_data["stability_score"][idx].item(),
-                "crop_box": box_xyxy_to_xywh(mask_data["crop_boxes"][idx]).tolist(),
-            }
-            curr_anns.append(ann)
+        # (数据格式处理) Write mask records
+        with profiler.record_function("write_mask_records"):    # 忽略不计
+            curr_anns = []
+            for idx in range(len(mask_data["segmentations"])):
+                ann = {
+                    "segmentation": mask_data["segmentations"][idx],
+                    "area": area_from_rle(mask_data["rles"][idx]),
+                    "bbox": box_xyxy_to_xywh(mask_data["boxes"][idx]).tolist(),
+                    "predicted_iou": mask_data["iou_preds"][idx].item(),
+                    "point_coords": [mask_data["points"][idx].tolist()],
+                    "stability_score": mask_data["stability_score"][idx].item(),
+                    "crop_box": box_xyxy_to_xywh(mask_data["crop_boxes"][idx]).tolist(),
+                }
+                curr_anns.append(ann)
 
         return curr_anns
 
     def _generate_masks(self, image: np.ndarray) -> MaskData:
         orig_size = image.shape[:2]
-        crop_boxes, layer_idxs = generate_crop_boxes(
-            orig_size, self.crop_n_layers, self.crop_overlap_ratio
-        )
-
-        # Iterate over image crops
-        data = MaskData()
-        for crop_box, layer_idx in zip(crop_boxes, layer_idxs):
-            crop_data = self._process_crop(image, crop_box, layer_idx, orig_size)
-            data.cat(crop_data)
-
-        # Remove duplicate masks between crops
-        if len(crop_boxes) > 1:
-            # Prefer masks from smaller crops
-            scores = 1 / box_area(data["crop_boxes"])
-            scores = scores.to(data["boxes"].device)
-            keep_by_nms = batched_nms(
-                data["boxes"].float(),
-                scores,
-                torch.zeros_like(data["boxes"][:, 0]),  # categories
-                iou_threshold=self.crop_nms_thresh,
+        with profiler.record_function("generate_crop_boxes"):   # 忽略不计
+            crop_boxes, layer_idxs = generate_crop_boxes(
+                orig_size, self.crop_n_layers, self.crop_overlap_ratio
             )
-            data.filter(keep_by_nms)
+            
+        with profiler.record_function("iterate_over_image_crops"):  # 6128ms, 1次, 几乎所有时间
+            # Iterate over image crops
+            data = MaskData()
+            for crop_box, layer_idx in zip(crop_boxes, layer_idxs):
+                crop_data = self._process_crop(image, crop_box, layer_idx, orig_size)
+                data.cat(crop_data)
+       
+        with profiler.record_function("remove_duplicate_masks_between_crops"):  # 忽略不计
+            # Remove duplicate masks between crops
+            if len(crop_boxes) > 1:
+                # Prefer masks from smaller crops
+                scores = 1 / box_area(data["crop_boxes"])
+                scores = scores.to(data["boxes"].device)
+                with profiler.record_function("batched_nms"):
+                    keep_by_nms = batched_nms(
+                        data["boxes"].float(),
+                        scores,
+                        torch.zeros_like(data["boxes"][:, 0]),  # categories
+                        iou_threshold=self.crop_nms_thresh,
+                    )
+                data.filter(keep_by_nms)
 
         data.to_numpy()
         return data
@@ -233,7 +241,8 @@ class SamAutomaticMaskGenerator:
         x0, y0, x1, y1 = crop_box
         cropped_im = image[y0:y1, x0:x1, :]
         cropped_im_size = cropped_im.shape[:2]
-        self.predictor.set_image(cropped_im)
+        with profiler.record_function("set_image"): # 1600ms, 1次, encoder
+            self.predictor.set_image(cropped_im)    # image encoder
 
         # Get points for this crop
         points_scale = np.array(cropped_im_size)[None, ::-1]
@@ -242,24 +251,27 @@ class SamAutomaticMaskGenerator:
         # Generate masks for this crop in batches
         data = MaskData()
         for (points,) in batch_iterator(self.points_per_batch, points_for_image):
-            batch_data = self._process_batch(points, cropped_im_size, crop_box, orig_size)
-            data.cat(batch_data)
-            del batch_data
+            with profiler.record_function("_process_batch"):    # 4500ms, 16次, decoder+nms
+                batch_data = self._process_batch(points, cropped_im_size, crop_box, orig_size)
+                data.cat(batch_data)
+                del batch_data
         self.predictor.reset_image()
 
-        # Remove duplicates within this crop.
-        keep_by_nms = batched_nms(
-            data["boxes"].float(),
-            data["iou_preds"],
-            torch.zeros_like(data["boxes"][:, 0]),  # categories
-            iou_threshold=self.box_nms_thresh,
-        )
-        data.filter(keep_by_nms)
+        with profiler.record_function("remove_duplicates_within_this_crop"):    # 忽略不计
+            # Remove duplicates within this crop.
+            keep_by_nms = batched_nms(
+                data["boxes"].float(),
+                data["iou_preds"],
+                torch.zeros_like(data["boxes"][:, 0]),  # categories
+                iou_threshold=self.box_nms_thresh,
+            )
+            data.filter(keep_by_nms)
 
-        # Return to the original image frame
-        data["boxes"] = uncrop_boxes_xyxy(data["boxes"], crop_box)
-        data["points"] = uncrop_points(data["points"], crop_box)
-        data["crop_boxes"] = torch.tensor([crop_box for _ in range(len(data["rles"]))])
+        with profiler.record_function("return_to_the_original_image_frame"):    # 忽略不计
+            # Return to the original image frame
+            data["boxes"] = uncrop_boxes_xyxy(data["boxes"], crop_box)
+            data["points"] = uncrop_points(data["points"], crop_box)
+            data["crop_boxes"] = torch.tensor([crop_box for _ in range(len(data["rles"]))])
 
         return data
 
@@ -276,47 +288,56 @@ class SamAutomaticMaskGenerator:
         transformed_points = self.predictor.transform.apply_coords(points, im_size)
         in_points = torch.as_tensor(transformed_points, device=self.predictor.device)
         in_labels = torch.ones(in_points.shape[0], dtype=torch.int, device=in_points.device)
-        masks, iou_preds, _ = self.predictor.predict_torch(
-            in_points[:, None, :],
-            in_labels[:, None],
-            multimask_output=True,
-            return_logits=True,
-        )
+        with profiler.record_function("predict_torch"): # 260ms, 16次, prompt+mask decoder
+            masks, iou_preds, _ = self.predictor.predict_torch(
+                in_points[:, None, :],
+                in_labels[:, None],
+                multimask_output=True,
+                return_logits=True,
+            )
 
-        # Serialize predictions and store in MaskData
-        data = MaskData(
-            masks=masks.flatten(0, 1),
-            iou_preds=iou_preds.flatten(0, 1),
-            points=torch.as_tensor(points.repeat(masks.shape[1], axis=0)),
-        )
-        del masks
+        with profiler.record_function("serialize_predictions_and_store_in_MaskData"):   # 1.7ms 16次
+            # Serialize predictions and store in MaskData
+            data = MaskData(
+                masks=masks.flatten(0, 1),
+                iou_preds=iou_preds.flatten(0, 1),
+                points=torch.as_tensor(points.repeat(masks.shape[1], axis=0)),
+            )
+            del masks
 
-        # Filter by predicted IoU
-        if self.pred_iou_thresh > 0.0:
-            keep_mask = data["iou_preds"] > self.pred_iou_thresh
-            data.filter(keep_mask)
+        with profiler.record_function("filter_by_predicted_IoU"):   # 2500ms 16次
+            # Filter by predicted IoU
+            if self.pred_iou_thresh > 0.0:
+                keep_mask = data["iou_preds"] > self.pred_iou_thresh
+                # with profiler.record_function("filter1"):   # ? 16次
+                data.filter(keep_mask)  # Q1:为什么这很慢?
 
-        # Calculate stability score
-        data["stability_score"] = calculate_stability_score(
-            data["masks"], self.predictor.model.mask_threshold, self.stability_score_offset
-        )
-        if self.stability_score_thresh > 0.0:
-            keep_mask = data["stability_score"] >= self.stability_score_thresh
-            data.filter(keep_mask)
+        with profiler.record_function("calculate_stability_score"): # 82ms 16次
+            # Calculate stability score
+            data["stability_score"] = calculate_stability_score(
+                data["masks"], self.predictor.model.mask_threshold, self.stability_score_offset
+            )
+            if self.stability_score_thresh > 0.0:
+                keep_mask = data["stability_score"] >= self.stability_score_thresh
+                # with profiler.record_function("filter2"):   # ? 16次
+                data.filter(keep_mask)  # Q2:为什么这很快?
 
-        # Threshold masks and calculate boxes
-        data["masks"] = data["masks"] > self.predictor.model.mask_threshold
-        data["boxes"] = batched_mask_to_box(data["masks"])
+        with profiler.record_function("threshold_masks_and_calculate_boxes"):   # 14ms, 16次, 很快
+            # Threshold masks and calculate boxes
+            data["masks"] = data["masks"] > self.predictor.model.mask_threshold
+            data["boxes"] = batched_mask_to_box(data["masks"])
 
-        # Filter boxes that touch crop boundaries
-        keep_mask = ~is_box_near_crop_edge(data["boxes"], crop_box, [0, 0, orig_w, orig_h])
-        if not torch.all(keep_mask):
-            data.filter(keep_mask)
+        with profiler.record_function("filter_boxes_that_touch_crop_boundaries"):   # 18ms, 16次, 很快
+            # Filter boxes that touch crop boundaries
+            keep_mask = ~is_box_near_crop_edge(data["boxes"], crop_box, [0, 0, orig_w, orig_h])
+            if not torch.all(keep_mask):
+                data.filter(keep_mask)
 
-        # Compress to RLE
-        data["masks"] = uncrop_masks(data["masks"], crop_box, orig_h, orig_w)
-        data["rles"] = mask_to_rle_pytorch(data["masks"])
-        del data["masks"]
+        with profiler.record_function("compress_to_RLE"):   # 777ms, 16次, 后处理
+            # Compress to RLE
+            data["masks"] = uncrop_masks(data["masks"], crop_box, orig_h, orig_w)
+            data["rles"] = mask_to_rle_pytorch(data["masks"])
+            del data["masks"]
 
         return data
 

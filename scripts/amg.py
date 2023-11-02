@@ -148,6 +148,15 @@ amg_settings.add_argument(
     ),
 )
 
+custom_fuc = {"everything_mode", "generate_masks", "postprocess_small_regions", \
+                "encode_masks", "write_mask_records", "generate_crop_boxes", \
+                "iterate_over_image_crops", "remove_duplicate_masks_between_crops", \
+                "batched_nms", "set_image", "_process_batch", "remove_duplicates_within_this_crop", \
+                "return_to_the_original_image_frame", "predict_torch", "serialize_predictions_and_store_in_MaskData", \
+                "filter_by_predicted_IoU", "calculate_stability_score", "threshold_masks_and_calculate_boxes", \
+                "filter_boxes_that_touch_crop_boundaries", "compress_to_RLE", "filter1", "filter2", \
+                "prompt_encoder", "mask_decoder", "postprocess_masks"}
+
 
 def write_masks_to_folder(masks: List[Dict[str, Any]], path: str) -> None:
     header = "id,area,bbox_x0,bbox_y0,bbox_w,bbox_h,point_input_x,point_input_y,predicted_iou,stability_score,crop_box_x0,crop_box_y0,crop_box_w,crop_box_h"  # noqa
@@ -218,8 +227,27 @@ def main(args: argparse.Namespace) -> None:
             continue
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        masks = generator.generate(image)
+        from torch.autograd import profiler
+        with profiler.profile(record_shapes=True) as prof:
+            with profiler.record_function("everything_mode"):
+                masks = generator.generate(image)
+        
+        from torch.autograd.profiler_util import EventList
+        # 获取所有分析结果
+        all_results = prof.key_averages(group_by_input_shape=True)
 
+        # 过滤出自定义区间的结果
+        custom_results = [res for res in all_results if res.key in custom_fuc]
+        
+        # 将 custom_results 转换为 EventList
+        custom_results_event_list = EventList(custom_results, use_cuda=False)
+
+        # 打印表格
+        table = custom_results_event_list.table(sort_by="cpu_time_total")
+        print(table)
+
+
+        exit()
         base = os.path.basename(t)
         base = os.path.splitext(base)[0]
         save_base = os.path.join(args.output, base)

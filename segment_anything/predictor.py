@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from segment_anything.modeling import Sam
+from torch.autograd import profiler
 
 from typing import Optional, Tuple
 
@@ -217,25 +218,28 @@ class SamPredictor:
             points = (point_coords, point_labels)
         else:
             points = None
+            
+        with profiler.record_function("prompt_encoder"):   # 
+            # Embed prompts
+            sparse_embeddings, dense_embeddings = self.model.prompt_encoder(
+                points=points,
+                boxes=boxes,
+                masks=mask_input,
+            )
 
-        # Embed prompts
-        sparse_embeddings, dense_embeddings = self.model.prompt_encoder(
-            points=points,
-            boxes=boxes,
-            masks=mask_input,
-        )
+        with profiler.record_function("mask_decoder"):   # 
+            # Predict masks
+            low_res_masks, iou_predictions = self.model.mask_decoder(
+                image_embeddings=self.features,
+                image_pe=self.model.prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse_embeddings,
+                dense_prompt_embeddings=dense_embeddings,
+                multimask_output=multimask_output,
+            )
 
-        # Predict masks
-        low_res_masks, iou_predictions = self.model.mask_decoder(
-            image_embeddings=self.features,
-            image_pe=self.model.prompt_encoder.get_dense_pe(),
-            sparse_prompt_embeddings=sparse_embeddings,
-            dense_prompt_embeddings=dense_embeddings,
-            multimask_output=multimask_output,
-        )
-
-        # Upscale the masks to the original image resolution
-        masks = self.model.postprocess_masks(low_res_masks, self.input_size, self.original_size)
+        with profiler.record_function("postprocess_masks"):   # 
+            # Upscale the masks to the original image resolution
+            masks = self.model.postprocess_masks(low_res_masks, self.input_size, self.original_size)
 
         if not return_logits:
             masks = masks > self.model.mask_threshold
