@@ -57,6 +57,7 @@ def bipartite_soft_matching(
         
         scores = a @ b.transpose(-1, -2)
 
+
         if class_token:
             scores[..., 0, :] = -math.inf
         if distill_token:
@@ -105,8 +106,7 @@ def bipartite_soft_matching(
 
 def bipartite_soft_matching_random2d(metric: torch.Tensor,
                                      w: int, h: int, sx: int, sy: int, r: int,
-                                     no_rand: bool = False,
-                                     generator: torch.Generator = None) -> Tuple[Callable, Callable]:
+                                     no_rand: bool = False) -> Tuple[Callable, Callable]:
     """
     Partitions the tokens into src and dst and merges r tokens from src to dst.
     Dst tokens are partitioned by choosing one randomy in each (sx, sy) region.

@@ -88,98 +88,153 @@ class SamPredictor:
         ), f"set_torch_image input must be BCHW with long side {self.model.image_encoder.img_size}."
         self.reset_image()
 
-        self.original_size = original_image_size
-        self.input_size = tuple(transformed_image.shape[-2:])
+        self.original_size = original_image_size  # (534, 800)
+        self.input_size = tuple(transformed_image.shape[-2:]) # (684, 1024)
         with profiler.record_function("preprocess"):   # 忽略不计
-          input_image = self.model.preprocess(transformed_image)
+          input_image = self.model.preprocess(transformed_image)  # (1, 3, 1024, 1024)
         with profiler.record_function("image_encoder"):   # 忽略不计
-          self.features = self.model.image_encoder(input_image)
-          
+          self.features = self.model.image_encoder(input_image) # (1, 256, 64, 64)
+        
+        # cropped_features = self.features[..., :self.input_size[0]//16, :self.input_size[1]//16]
         # from .tome import compute_cosine_similarity, plot_similarity_matrix, visualize_cosine_similarity
         # # 计算余弦相似度矩阵
-        # cosine_sim_matrix = compute_cosine_similarity(self.features.permute(0, 2, 3, 1).view(1, 4096, 256))  # 取batch中的第一个元素
-        # visualize_cosine_similarity(cosine_sim_matrix[0].cpu(), H=30, W=15)
+        # cosine_sim_matrix = compute_cosine_similarity(cropped_features.permute(0, 2, 3, 1).view(1, -1, 256))  # 取batch中的第一个元素
+        
+        # # Algorithm to cluster points based on cosine similarity and spatial proximity
+        # def cluster_points(cosine_sim_matrix, threshold):
+        #     height, width = 42, 64  # The spatial dimensions (height x width)
+        #     clusters = []
+        #     visited = set()
+            
+        #     def get_neighbors(index):
+        #         y, x = divmod(index, width)
+        #         neighbors = []
+        #         for dy in (-1, 0, 1):
+        #             for dx in (-1, 0, 1):
+        #                 if dy == 0 and dx == 0:
+        #                     continue
+        #                 ny, nx = y + dy, x + dx
+        #                 if 0 <= ny < height and 0 <= nx < width:
+        #                     neighbors.append(ny * width + nx)
+        #         return neighbors
+
+        #     def grow_cluster(seed_index):
+        #         cluster = set([seed_index])
+        #         queue = [seed_index]
+        #         while queue:
+        #             current_index = queue.pop(0)
+        #             for neighbor_index in get_neighbors(current_index):
+        #                 if neighbor_index not in visited and cosine_sim_matrix[0, current_index, neighbor_index] >= threshold:
+        #                     visited.add(neighbor_index)
+        #                     cluster.add(neighbor_index)
+        #                     queue.append(neighbor_index)
+        #         return cluster
+
+        #     for index in range(height * width):
+        #         if index not in visited:
+        #             neighbors = get_neighbors(index)
+        #             # Check if any neighbor has a similarity above the threshold
+        #             if any(cosine_sim_matrix[0, index, neighbor] >= threshold for neighbor in neighbors):
+        #                 visited.add(index)
+        #                 cluster = grow_cluster(index)
+        #                 clusters.append(cluster)
+
+        #     return clusters
+
+        # # Now we can call the function with a threshold (e.g., 0.9 for very similar points)
+        # import pdb;pdb.set_trace()
+        # clusters = cluster_points(cosine_sim_matrix, threshold=0.95)
+        
+        # visualize_cosine_similarity(cosine_sim_matrix[0].cpu(), H=37, W=10, org_H=cropped_features.shape[-2], org_W=cropped_features.shape[-1])
+        # 绘制余弦相似度矩阵的颜色图
+        # plot_similarity_matrix(cosine_sim_matrix[0].cpu())
         # exit()
-        # # 绘制余弦相似度矩阵的颜色图
-        # plot_similarity_matrix(cosine_sim_matrix.cpu())
         
-        #===================  Token Merging - Start  =====================#
-        tome_feature = self.features.permute(0, 2, 3, 1).view(1, 4096, 256)
-        org_feature = tome_feature.clone()
-        org_norm = torch.norm(org_feature, p=2)
+        # #===================  Token Merging - Start  =====================#
+        # # Example usage in your main loop
+        # initial_blocks_to_merge = 80  # Start with a higher number
+        # final_blocks_to_merge = 10    # End with a lower number
+        # blocks_to_merge = 40
+        # total_iterations = 100       # Total iterations
+        # stop_threshold = 0.8  # Set a threshold for stopping
         
-        def adjust_blocks_to_merge(initial_blocks, final_blocks, total_iterations, current_iteration):
-            """
-            Adjust the number of blocks to merge based on the current iteration.
-            initial_blocks: Number of blocks to merge at the start.
-            final_blocks: Minimum number of blocks to merge at the end.
-            total_iterations: Total number of iterations.
-            current_iteration: Current iteration number.
-            """
-            # Linearly decrease the number of blocks to merge.
-            blocks_to_merge = initial_blocks - (initial_blocks - final_blocks) * (current_iteration / total_iterations)
-            return max(blocks_to_merge, final_blocks)
+        # tome_feature = self.features.permute(0, 2, 3, 1).view(1, 4096, 256)
+        
+        # for i in range(total_iterations):
+        #     merge, _ = bipartite_soft_matching(tome_feature, int(blocks_to_merge), False, False)
+        #     sources = merge_source(merge, tome_feature, sources if i else None)
+        #     tome_feature = merge(tome_feature)
+        #     print(f"Iter-{i}: tokens={tome_feature.shape[1]}")
+        # import pdb;pdb.set_trace()
+        # # org_feature = tome_feature.clone()
+        # # org_norm = torch.norm(org_feature, p=2)
+        
+        # # def adjust_blocks_to_merge(initial_blocks, final_blocks, total_iterations, current_iteration):
+        # #     """
+        # #     Adjust the number of blocks to merge based on the current iteration.
+        # #     initial_blocks: Number of blocks to merge at the start.
+        # #     final_blocks: Minimum number of blocks to merge at the end.
+        # #     total_iterations: Total number of iterations.
+        # #     current_iteration: Current iteration number.
+        # #     """
+        # #     # Linearly decrease the number of blocks to merge.
+        # #     blocks_to_merge = initial_blocks - (initial_blocks - final_blocks) * (current_iteration / total_iterations)
+        # #     return max(blocks_to_merge, final_blocks)
 
-        def feature_difference(org_feature, tome_feature, sources):
-            """
-            Calculate the difference between the original feature map and the current feature map.
-            org_feature: The original feature map, shape [1, 4096, 256].
-            tome_feature: The current feature map, shape [1, N, 256] where N <= 4096.
-            sources: The sources mapping, shape [1, N, 4096].
-            """
-            # Reconstruct the current feature to match the original feature's dimension
-            reconstructed_feature = reconstruct_feature(tome_feature, sources)
+        # # def feature_difference(org_feature, tome_feature, sources):
+        # #     """
+        # #     Calculate the difference between the original feature map and the current feature map.
+        # #     org_feature: The original feature map, shape [1, 4096, 256].
+        # #     tome_feature: The current feature map, shape [1, N, 256] where N <= 4096.
+        # #     sources: The sources mapping, shape [1, N, 4096].
+        # #     """
+        # #     # Reconstruct the current feature to match the original feature's dimension
+        # #     reconstructed_feature = reconstruct_feature(tome_feature, sources)
             
-            return torch.norm(reconstructed_feature - org_feature, p=2)
+        # #     return torch.norm(reconstructed_feature - org_feature, p=2)
           
-        def reconstruct_feature(tome_feature, sources):
-            """
-            Reconstruct the current feature map to match the original dimension.
-            tome_feature: The current feature map, shape [1, 4016, 256].
-            sources: The sources mapping, shape [1, 4016, 4096].
-            """
-            # Expand tome_feature to match the last dimension of sources
-            expanded_tome_feature = tome_feature.unsqueeze(3)  # Shape becomes [1, 4016, 256, 1]
+        # # def reconstruct_feature(tome_feature, sources):
+        # #     """
+        # #     Reconstruct the current feature map to match the original dimension.
+        # #     tome_feature: The current feature map, shape [1, 4016, 256].
+        # #     sources: The sources mapping, shape [1, 4016, 4096].
+        # #     """
+        # #     # Expand tome_feature to match the last dimension of sources
+        # #     expanded_tome_feature = tome_feature.unsqueeze(3)  # Shape becomes [1, 4016, 256, 1]
 
-            # Multiply the expanded tome_feature with sources
-            # sources is expanded to match the third dimension of expanded_tome_feature
-            weighted_features = expanded_tome_feature * sources.unsqueeze(2)  # Shape becomes [1, 4016, 256, 4096]
+        # #     # Multiply the expanded tome_feature with sources
+        # #     # sources is expanded to match the third dimension of expanded_tome_feature
+        # #     weighted_features = expanded_tome_feature * sources.unsqueeze(2)  # Shape becomes [1, 4016, 256, 4096]
 
-            # Sum over the second dimension to combine contributions from each new feature to the original features
-            reconstructed_feature = torch.sum(weighted_features, dim=1)  # Shape becomes [1, 256, 4096]
+        # #     # Sum over the second dimension to combine contributions from each new feature to the original features
+        # #     reconstructed_feature = torch.sum(weighted_features, dim=1)  # Shape becomes [1, 256, 4096]
 
-            # Transpose to match the shape of org_feature
-            reconstructed_feature = reconstructed_feature.transpose(1, 2)  # Shape becomes [1, 4096, 256]
+        # #     # Transpose to match the shape of org_feature
+        # #     reconstructed_feature = reconstructed_feature.transpose(1, 2)  # Shape becomes [1, 4096, 256]
 
-            return reconstructed_feature
+        # #     return reconstructed_feature
 
-        # Example usage in your main loop
-        initial_blocks_to_merge = 80  # Start with a higher number
-        final_blocks_to_merge = 10    # End with a lower number
-        total_iterations = 100        # Total iterations
-        stop_threshold = 0.8  # Set a threshold for stopping
-
-        for i in range(total_iterations):
-            blocks_to_merge = adjust_blocks_to_merge(initial_blocks_to_merge, final_blocks_to_merge, total_iterations, i)
-            merge, _ = bipartite_soft_matching(tome_feature, int(blocks_to_merge), False, False)
-            sources = merge_source(merge, tome_feature, sources if i else None)
-            tome_feature = merge(tome_feature)
-            diff = feature_difference(org_feature, tome_feature, sources) / org_norm
-            if diff > stop_threshold:
-                break
+        # # for i in range(total_iterations):
+        # #     blocks_to_merge = adjust_blocks_to_merge(initial_blocks_to_merge, final_blocks_to_merge, total_iterations, i)
+        # #     merge, _ = bipartite_soft_matching(tome_feature, int(blocks_to_merge), False, False)
+        # #     sources = merge_source(merge, tome_feature, sources if i else None)
+        # #     tome_feature = merge(tome_feature)
+        # #     # diff = feature_difference(org_feature, tome_feature, sources) / org_norm
+        # #     # if diff > stop_threshold:
+        # #         # break
               
-            print(f"Iter-{i}: tokens={tome_feature.shape[1]}, diff={diff * 100:.1f}%")
+        # #     print(f"Iter-{i}: tokens={tome_feature.shape[1]}")
+        # #     # print(f"Iter-{i}: tokens={tome_feature.shape[1]}, diff={diff * 100:.1f}%")
             
-        from torch.nn import functional as F
-        import pdb;pdb.set_trace()
+        # from torch.nn import functional as F
         
-        h, w = transformed_image.shape[-2:]
-        padh = 1024 - h
-        padw = 1024 - w
-        img_vis = F.pad(transformed_image, (0, padw, 0, padh))[0,].permute(1, 2, 0).cpu()
-        make_visualization(img_vis, sources, patch_size=16, class_token=False)
-        exit()
-        #===================  Token Merging - End =====================#
+        # h, w = transformed_image.shape[-2:]
+        # padh = 1024 - h
+        # padw = 1024 - w
+        # img_vis = F.pad(transformed_image, (0, padw, 0, padh))[0,].permute(1, 2, 0).cpu()
+        # make_visualization(img_vis, sources, patch_size=16, class_token=False)
+        # exit()
+        # #===================  Token Merging - End =====================#
         self.is_image_set = True
 
     def predict(

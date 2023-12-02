@@ -4,7 +4,8 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import cv2  # type: ignore
+# import cv2  # type: ignore
+from PIL import Image
 
 from tinysam import SamAutomaticMaskGenerator, sam_model_registry
 
@@ -12,6 +13,8 @@ import argparse
 import json
 import os
 from typing import Any, Dict, List
+from tinysam.utils import fast_process
+import numpy as np
 
 parser = argparse.ArgumentParser(
     description=(
@@ -226,25 +229,49 @@ def main(args: argparse.Namespace) -> None:
 
     for t in targets:
         print(f"Processing '{t}'...")
-        image = cv2.imread(t)
+        # image = cv2.imread(t)
+        image = Image.open(t)
         if image is None:
             print(f"Could not load '{t}' as an image, skipping...")
             continue
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        w, h = image.size
+        scale = 800 / max(w, h)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        image = image.resize((new_w, new_h))
+        
+        nd_image = np.array(image)
+        annotations = generator.generate(nd_image)
+        fig = fast_process(
+            annotations=annotations,
+            image=image,
+            device=args.device,
+            scale=(1024 // 800),
+            better_quality=True,
+            mask_random_color=True,
+            bbox=None,
+            use_retina=True,
+            withContours=True,
+        )
+        import matplotlib.pyplot as plt
 
-        masks = generator.generate(image)
-
-        base = os.path.basename(t)
-        base = os.path.splitext(base)[0]
-        save_base = os.path.join(args.output, base)
-        if output_mode == "binary_mask":
-            os.makedirs(save_base, exist_ok=False)
-            write_masks_to_folder(masks, save_base)
-        else:
-            save_file = save_base + ".json"
-            with open(save_file, "w") as f:
-                json.dump(masks, f)
-    print("Done!")
+        # 显示图像
+        plt.imshow(fig)
+        plt.axis('off')  # 不显示坐标轴
+        plt.savefig(f'figures/{t.split("/")[-1]}')
+    #     base = os.path.basename(t)
+    #     base = os.path.splitext(base)[0]
+    #     save_base = os.path.join(args.output, base)
+    #     if output_mode == "binary_mask":
+    #         os.makedirs(save_base, exist_ok=False)
+    #         write_masks_to_folder(masks, save_base)
+    #     else:
+    #         save_file = save_base + ".json"
+    #         with open(save_file, "w") as f:
+    #             json.dump(masks, f)
+    # print("Done!")
 
 
 if __name__ == "__main__":

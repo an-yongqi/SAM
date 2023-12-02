@@ -83,16 +83,17 @@ def make_visualization(
 
     return vis_img
 
-def visualize_cosine_similarity(matrix, H, W):
+def visualize_cosine_similarity(matrix, H, W, org_H, org_W):
+    
     # 确保输入的H和W是有效的
-    if H < 0 or H >= 64 or W < 0 or W >= 64:
-        raise ValueError("Invalid H or W coordinates. They must be between 0 and 63.")
+    if H < 0 or H >= org_H or W < 0 or W >= org_W:
+        raise ValueError("Invalid H or W coordinates. They must be between 0 and org_H/W.")
 
     # 计算索引
-    index = H * 64 + W
-
+    index = H * org_W + W
+    import pdb;pdb.set_trace()
     # 提取与特定token相关的相似度
-    similarities = matrix[index].reshape(64, 64)
+    similarities = matrix[index].reshape(org_H, org_W)
 
     # 可视化
     plt.imshow(similarities, cmap='hot', interpolation='nearest', vmin=-1, vmax=1)
@@ -124,7 +125,7 @@ def plot_similarity_matrix(matrix):
     plt.imshow(matrix, cmap='hot')
     plt.colorbar()
     plt.title("Cosine Similarity Matrix")
-    plt.savefig('figures/cosine_feature.png')
+    plt.savefig('figures/cropped_cosine_feature.png')
     plt.close()
 
 # 假设self.features是你的特征图，形状为[1, 256, 64, 64]

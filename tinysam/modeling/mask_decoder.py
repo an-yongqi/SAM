@@ -120,6 +120,7 @@ class MaskDecoder(nn.Module):
         dense_prompt_embeddings: torch.Tensor,  # (bs, dim, H, W)
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predicts masks. See 'forward' for more details."""
+        import pdb;pdb.set_trace()
         with profiler.record_function("Concatenate output tokens"):
             # Concatenate output tokens
             output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight], dim=0)

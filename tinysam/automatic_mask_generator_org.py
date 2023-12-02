@@ -243,80 +243,19 @@ class SamAutomaticMaskGenerator:
         cropped_im_size = cropped_im.shape[:2]
         with profiler.record_function("set_image"): # 1600ms, 1次, encoder
             self.predictor.set_image(cropped_im)    # image encoder
-                
-        #===================  去除Token冗余  =====================#
-        new_H = self.predictor.input_size[0] // 16
-        new_W = self.predictor.input_size[1] // 16
-        cropped_features = self.predictor.features[..., :new_H, :new_W]
         
-        #===================  Token Merge  =====================#
-        # Example usage in your main loop
-        blocks_to_merge = 40
-        total_iterations = 100       # Total iterations
-        merge_rate = 0.1
         
-        tome_feature = cropped_features.permute(0, 2, 3, 1).view(1, -1, 256)
-        from .tome import merge_source, bipartite_soft_matching, bipartite_soft_matching_random2d
-        
-        for i in range(total_iterations):
-            merge, _ = bipartite_soft_matching(tome_feature, int(blocks_to_merge), False, False)
-            sources = merge_source(merge, tome_feature, sources if i else None)
-            tome_feature = merge(tome_feature)
-            print(f"Iter-{i}: tokens={tome_feature.shape[1]}")
-            if tome_feature.shape[1] < 300: # and (sources.sum(dim=2)>1).sum() <= 80: # tome_feature.shape[1] < 300: # TODO:改成tome_feature.shape[1]<?,过滤或<?
-                break
-            
-        
-        #===================  Merge结果生成points  =====================#
-        filter_sources = sources[0]
-        # filter_sources = sources[sources.sum(dim=2)>1]  
-        print(f"Final tokens={filter_sources.shape[0]}")
-        
-        def find_cluster_centers(sources, feature_map_size):
-            """
-            Find the center of each cluster based on the sources tensor.
-            sources: Tensor representing the cluster mapping, shape [num_clusters, num_original_tokens].
-            feature_map_size: Size of the original feature map (height, width).
-            """
-            num_clusters, _ = sources.shape
-            height, width = feature_map_size
+        # Get points for this crop
+        points_scale = np.array(cropped_im_size)[None, ::-1]
+        points_for_image = self.point_grids[crop_layer_idx] * points_scale  # 在原图上均匀撒点
 
-            centers = []
-            for i in range(num_clusters):
-                # Get the indices of the original tokens in this cluster
-                indices = sources[i].nonzero(as_tuple=False).squeeze()
-
-                # Calculate the x and y coordinates
-                y_coords = indices // width
-                x_coords = indices % width
-
-                # Calculate the center
-                center_x = x_coords.float().mean().item()
-                center_y = y_coords.float().mean().item()
-                centers.append((center_x, center_y))
-
-            return centers
-        
-        cluster_centers = find_cluster_centers(filter_sources, (new_H, new_W))
-        points_for_image = np.array(cluster_centers) * 16
-        # Generate masks for this crop in one batch
+        # Generate masks for this crop in batches
         data = MaskData()
-        with profiler.record_function("_process_batch"):    # 4500ms, 16次, decoder+nms
-            batch_data = self._process_batch(points_for_image, cropped_im_size, crop_box, orig_size)
-            data.cat(batch_data)
-            del batch_data
-       
-        # # Get points for this crop
-        # points_scale = np.array(cropped_im_size)[None, ::-1]
-        # points_for_image = self.point_grids[crop_layer_idx] * points_scale  # 在原图上均匀撒点
-
-        # # Generate masks for this crop in batches
-        # data = MaskData()
-        # for (points,) in batch_iterator(self.points_per_batch, points_for_image):
-        #     with profiler.record_function("_process_batch"):    # 4500ms, 16次, decoder+nms
-        #         batch_data = self._process_batch(points, cropped_im_size, crop_box, orig_size)
-        #         data.cat(batch_data)
-        #         del batch_data
+        for (points,) in batch_iterator(self.points_per_batch, points_for_image):
+            with profiler.record_function("_process_batch"):    # 4500ms, 16次, decoder+nms
+                batch_data = self._process_batch(points, cropped_im_size, crop_box, orig_size)
+                data.cat(batch_data)
+                del batch_data
         self.predictor.reset_image()
 
         with profiler.record_function("remove_duplicates_within_this_crop"):    # 忽略不计
@@ -347,8 +286,8 @@ class SamAutomaticMaskGenerator:
         orig_h, orig_w = orig_size
 
         # Run model on this batch
-        transformed_points = points
-        # transformed_points = self.predictor.transform.apply_coords(points, im_size) # 映射到(1024, 1024)特征图的位置
+        import pdb;pdb.set_trace()
+        transformed_points = self.predictor.transform.apply_coords(points, im_size) # 映射到(1024, 1024)特征图的位置
         in_points = torch.as_tensor(transformed_points, device=self.predictor.device)
         in_labels = torch.ones(in_points.shape[0], dtype=torch.int, device=in_points.device)
         with profiler.record_function("predict_torch"): # 260ms, 16次, prompt+mask decoder
